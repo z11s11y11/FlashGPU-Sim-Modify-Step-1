@@ -1,0 +1,1271 @@
+--- a/src/gpgpu-sim/dram.cc
++++ b/src/gpgpu-sim/dram.cc
+@@ -35,7 +35,6 @@
+ #include "gpu-misc.h"
+ #include "gpu-sim.h"
+ #include "hashing.h"
+-#include "l2cache.h"
+ #include "mem_fetch.h"
+ #include "mem_latency_stat.h"
+ 
+@@ -48,14 +47,12 @@
+ 
+ dram_t::dram_t(unsigned int partition_id, const memory_config *config,
+                memory_stats_manager_t *stats,
+-               memory_partition_unit *mp,
+-               gpgpu_sim *gpu) {
++               dram_context *context) {
+ 
+   id = partition_id;                       // 本 DRAM channel（memory partition）编号
+-  m_memory_partition_unit = mp;            // 所属 memory_partition_unit（上游 L2，写回经它 set_done）
++  m_context = context;
+   m_mem_stats = stats;                     // 访存延迟统计管理器（统计文件输出用）
+   m_config = config;                       // DRAM/HBM 配置（时序参数、bank 数等，源自 gpgpusim.config）
+-  m_gpu = gpu;                             // 所属 GPU（目前仅用于取全局周期做时间戳，解耦时要去掉）
+ 
+   // rowblp：行局部性（row locality）与 bank 级并行度（BLP）统计
+   access_num = 0;                          // 已发射命令总数（ACT + RD/WR，行命中率的分子分母）
+@@ -221,11 +218,11 @@
+ 
+ dram_req_t::dram_req_t(class mem_fetch *mf, unsigned banks,
+                        unsigned dram_bnk_indexing_policy,
+-                       class gpgpu_sim *gpu) {
++                       unsigned long long cycle,
++                       unsigned long long kernel_cycle) {
+   txbytes = 0; // 已传输字节数：每完成一个 burst 累加 atom_size，达到 nbytes 即服务完成
+   dqbytes = 0; // 本周期数据总线已占用字节数：统计/限流用，防止一个周期超额占线
+   data = mf; // 原始请求指针：关联的 mem_fetch（含 SM 来源、TLB 等信息）
+-  m_gpu = gpu; // 所属 GPU 指针：目前仅用于取全局周期，解耦时应移除
+ 
+   const addrdec_t &tlx = mf->get_tlx_addr();
+ 
+@@ -265,11 +262,11 @@
+   nbytes = mf->get_data_size(); // 待传输总字节数：本次请求需要搬完的数据量（= access size）
+ 
+   // 进入 DRAM 的时刻（全局周期）：算 queuing latency 的起点
+-  timestamp = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
++  timestamp = cycle;
+   // 原始物理地址：请求的完整地址，用于统计与调试回溯
+   addr = mf->get_addr();
+   // 入队时刻：进入 mrqq/调度队列的周期，算调度等待时间
+-  insertion_time = (unsigned)m_gpu->gpu_sim_cycle;
++  insertion_time = (unsigned)kernel_cycle;
+   // 读写标志：1 = 读请求（要返回数据），0 = 写请求
+   rw = data->get_is_write() ? WRITE : READ;
+ }
+@@ -280,10 +277,10 @@
+ 
+   dram_req_t *mrq =
+       new dram_req_t(data, m_config->nbk, m_config->dram_bnk_indexing_policy,
+-                     m_memory_partition_unit->get_mgpu());
++                     m_context->current_cycle(), m_context->kernel_cycle());
+ 
+   data->set_status(IN_PARTITION_MC_INTERFACE_QUEUE,
+-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++                   m_context->current_cycle());
+   mrqq->push(mrq);
+ 
+   // stats...
+@@ -306,7 +303,7 @@
+     dram_req_t *head_mrqq = mrqq->top();
+     head_mrqq->data->set_status(
+         IN_PARTITION_MC_BANK_ARB_QUEUE,
+-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++        m_context->current_cycle());
+     bkn = head_mrqq->bk;
+     if (!bk[bkn]->mrq) bk[bkn]->mrq = mrqq->pop();
+   }
+@@ -331,13 +328,13 @@
+       if (cmd->dqbytes >= cmd->nbytes) {
+         mem_fetch *data = cmd->data;
+         data->set_status(IN_PARTITION_MC_RETURNQ,
+-                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++                         m_context->current_cycle());
+         if (data->get_access_type() != L1_WRBK_ACC &&
+             data->get_access_type() != L2_WRBK_ACC) {
+           data->set_reply();
+           returnq->push(data);
+         } else {
+-          m_memory_partition_unit->set_done(data);
++          m_context->complete_writeback(data);
+           delete data;
+         }
+         delete cmd;
+@@ -588,7 +585,7 @@
+   unsigned grp = get_bankgrp_number(j);
+   if (bk[j]->mrq) {  // if currently servicing a memory request
+     bk[j]->mrq->data->set_status(
+-        IN_PARTITION_DRAM, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++        IN_PARTITION_DRAM, m_context->current_cycle());
+     // correct row activated for a READ
+     if (!issued && !CCDc && !bk[j]->RCDc && !(bkgrp[grp]->CCDLc) &&
+         (bk[j]->curr_row == bk[j]->mrq->row) && (bk[j]->mrq->rw == READ) &&
+@@ -613,7 +610,7 @@
+       bwutil += m_config->BL / m_config->data_command_freq_ratio;
+       bwutil_partial += m_config->BL / m_config->data_command_freq_ratio;
+       bk[j]->n_access++;
+-      last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
++      last_cmd_cycle = m_context->current_cycle();
+       last_col_cycle = last_cmd_cycle;
+       last_read_col_cycle = last_cmd_cycle;
+ 
+@@ -650,7 +647,7 @@
+           n_wr++;
+         bwutil += m_config->BL / m_config->data_command_freq_ratio;
+         bwutil_partial += m_config->BL / m_config->data_command_freq_ratio;
+-        last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
++        last_cmd_cycle = m_context->current_cycle();
+         last_col_cycle = last_cmd_cycle;
+         last_write_col_cycle = last_cmd_cycle;
+ #ifdef DRAM_VERIFY
+@@ -674,7 +671,7 @@
+   unsigned grp = get_bankgrp_number(j);
+   if (bk[j]->mrq) {  // if currently servicing a memory request
+     bk[j]->mrq->data->set_status(
+-        IN_PARTITION_DRAM, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++        IN_PARTITION_DRAM, m_context->current_cycle());
+     //     bank is idle
+     // else
+     if (!issued && !RRDc && (bk[j]->state == BANK_IDLE) && !bk[j]->RPc &&
+@@ -696,7 +693,7 @@
+       issued = true;
+       n_act_partial++;
+       n_act++;
+-      last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
++      last_cmd_cycle = m_context->current_cycle();
+       last_row_cycle = last_cmd_cycle;
+     }
+ 
+@@ -713,7 +710,7 @@
+         issued = true;
+         n_pre++;
+         n_pre_partial++;
+-        last_cmd_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
++        last_cmd_cycle = m_context->current_cycle();
+         last_row_cycle = last_cmd_cycle;
+ #ifdef DRAM_VERIFY
+         PRINT_CYCLE = 1;
+--- a/src/gpgpu-sim/dram.h
++++ b/src/gpgpu-sim/dram.h
+@@ -44,6 +44,7 @@
+ #include <string>
+ #include <vector>
+ #include "delayqueue.h"
++#include "memory_pool_interface.h"
+ 
+ #define READ 'R'  // define read and write states
+ #define WRITE 'W'
+@@ -55,7 +56,8 @@
+ class dram_req_t {
+  public:
+   dram_req_t(class mem_fetch *data, unsigned banks,
+-             unsigned dram_bnk_indexing_policy, class gpgpu_sim *gpu);
++             unsigned dram_bnk_indexing_policy, unsigned long long cycle,
++             unsigned long long kernel_cycle);
+ 
+   unsigned int row;             // 目标行地址：请求要访问的 DRAM row（页），ACT 命令打开的对象
+   unsigned int col;             // 列地址：row 内的起始 burst 位置，RD/WR 命令的寻址字段
+@@ -69,7 +71,6 @@
+   unsigned long long int addr;  // 原始物理地址：请求的完整地址，用于统计与调试回溯
+   unsigned int insertion_time;  // 入队时刻：进入 mrqq/调度队列的周期，算调度等待时间
+   class mem_fetch *data;        // 原始请求指针：关联的 mem_fetch（含 SM 来源、TLB 等信息）
+-  class gpgpu_sim *m_gpu;       // 所属 GPU 指针：目前仅用于取全局周期，解耦时应移除
+ };
+ 
+ struct bankgrp_t {
+@@ -114,8 +115,7 @@
+ class dram_t {
+  public:
+   dram_t(unsigned int parition_id, const memory_config *config,
+-         memory_stats_manager_t *stats, class memory_partition_unit *mp,
+-         class gpgpu_sim *gpu);
++         memory_stats_manager_t *stats, dram_context *context);
+ 
+   // 判断 DRAM channel 还能不能接收新请求，是调用方决定是否 throttle 的开关
+   bool full(bool is_write) const;
+@@ -144,13 +144,7 @@
+                                       // task 区分要打印哪类信息（命令、队列状态等），
+                                       // 正常仿真为空操作
+ 
+-  // ============ 反向关联指针（解耦改造的主要对象） ============
+-  class memory_partition_unit *m_memory_partition_unit;  // 所属 memory partition（上游 L2），
+-                                      // 目前仅用于写回时回调 set_done() 和取 gpu 指针——
+-                                      // 改造成方案 A/B 后应删除（改由回调接口或 returnq 承担）
+-  class gpgpu_sim *m_gpu;             // 所属 GPU 指针：全类唯一用途是取全局周期
+-                                      // （gpu_sim_cycle + gpu_tot_sim_cycle）做时间戳，
+-                                      // 是 IClock 抽象要替换掉的耦合点
++  dram_context *m_context;  // Borrowed channel context owned by the pool.
+   unsigned int id;                    // 本 DRAM channel 的编号（= memory partition 编号），
+                                       // 由 gpgpu_sim 创建时传入（0 ~ gpgpu_n_mem-1），
+                                       // push() 里的 assert(id == tlx.chip) 用它校验
+--- a/src/gpgpu-sim/dram_sched.cc
++++ b/src/gpgpu-sim/dram_sched.cc
+@@ -98,16 +98,16 @@
+ 
+ void frfcfs_scheduler::data_collection(unsigned int bank) {
+   auto mem_stats = m_mem_stats->get_stats();
+-  if (m_dram->m_gpu->gpu_sim_cycle > row_service_timestamp[bank]) {
++  if (m_dram->m_context->kernel_cycle() > row_service_timestamp[bank]) {
+     curr_row_service_time[bank] =
+-        m_dram->m_gpu->gpu_sim_cycle - row_service_timestamp[bank];
++        m_dram->m_context->kernel_cycle() - row_service_timestamp[bank];
+     if (curr_row_service_time[bank] >
+         mem_stats->max_servicetime2samerow[m_dram->id][bank])
+       mem_stats->max_servicetime2samerow[m_dram->id][bank] =
+           curr_row_service_time[bank];
+   }
+   curr_row_service_time[bank] = 0;
+-  row_service_timestamp[bank] = m_dram->m_gpu->gpu_sim_cycle;
++  row_service_timestamp[bank] = m_dram->m_context->kernel_cycle();
+   if (mem_stats->concurrent_row_access[m_dram->id][bank] >
+       mem_stats->max_conc_access2samerow[m_dram->id][bank]) {
+     mem_stats->max_conc_access2samerow[m_dram->id][bank] =
+@@ -258,7 +258,7 @@
+     }
+ 
+     req->data->set_status(IN_PARTITION_MC_INPUT_QUEUE,
+-                          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++                          m_context->current_cycle());
+     sched->add_req(req);
+   }
+ 
+@@ -269,16 +269,16 @@
+ 
+     if (req) {
+       req->data->set_status(IN_PARTITION_MC_BANK_ARB_QUEUE,
+-                            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++                            m_context->current_cycle());
+       prio = (prio + 1) % m_config->nbk;
+       bk[b]->mrq = req;
+       if (m_config->gpgpu_memlatency_stat) {
+-        mrq_latency = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
++        mrq_latency = m_context->current_cycle() -
+                       bk[b]->mrq->timestamp;
+         mem_stats->tot_mrq_latency += mrq_latency;
+         mem_stats->tot_mrq_num++;
+         bk[b]->mrq->timestamp =
+-            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
++            m_context->current_cycle();
+         mem_stats->mrq_lat_table[LOGB2(mrq_latency)]++;
+         if (mrq_latency > mem_stats->max_mrq_latency) {
+           mem_stats->max_mrq_latency = mrq_latency;
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -1267,6 +1267,9 @@
+ 
+   // TODO: somehow move this logic to the sst_gpgpu_sim constructor?
+   if (!m_config.is_SST_mode()) {
++    // The driver owns the pool; L2 partitions only register client interfaces.
++    m_memory_pool.reset(new memory_pool(m_memory_config->m_n_mem,
++                                         m_memory_config, m_mem_stats));
+     // Init memory if not in SST mode
+     m_memory_partition_unit =
+         new memory_partition_unit *[m_memory_config->m_n_mem];
+@@ -1274,7 +1277,8 @@
+         new memory_sub_partition *[m_memory_config->m_n_mem_sub_partition];
+     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
+       m_memory_partition_unit[i] =
+-          new memory_partition_unit(i, m_memory_config, m_mem_stats, this);
++          new memory_partition_unit(i, m_memory_config, m_mem_stats, this,
++                                    *m_memory_pool, i);
+       for (unsigned p = 0;
+            p < m_memory_config->m_n_sub_partition_per_memory_channel; p++) {
+         unsigned submpid =
+@@ -1284,6 +1288,7 @@
+       }
+     }
+ 
++    m_memory_pool->seal();
+     icnt_wrapper_init();
+     icnt_create(m_shader_config->n_simt_clusters,
+                 m_memory_config->m_n_mem_sub_partition);
+@@ -2067,6 +2072,7 @@
+                                                        m_memory_config->nbk);
+   for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
+     m_memory_partition_unit[i]->print(stdout);
++  if (m_memory_pool) m_memory_pool->print_summary(stdout);
+ 
+   // L2 cache stats
+   if (!m_memory_config->m_L2_config.disabled()) {
+@@ -2543,12 +2549,8 @@
+ 
+   if (clock_mask & DRAM && !gem5_integrated) {
+     profiler.start_step();
++    m_memory_pool->cycle(gpu_sim_cycle, gpu_tot_sim_cycle);
+     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
+-      if (m_memory_config->simple_dram_model)
+-        m_memory_partition_unit[i]->simple_dram_model_cycle();
+-      else
+-        m_memory_partition_unit[i]
+-            ->dram_cycle();  // Issue the dram command (scheduler + delay model)
+       // Update performance counters for DRAM
+       m_memory_partition_unit[i]->set_dram_power_stats(
+           m_power_stats->pwr_mem_stat->n_cmd[CURRENT_STAT_IDX][i],
+--- a/src/gpgpu-sim/gpu-sim.h
++++ b/src/gpgpu-sim/gpu-sim.h
+@@ -41,6 +41,7 @@
+ #include "../option_parser.h"
+ #include "../trace.h"
+ #include "addrdec.h"
++#include "memory_pool.h"
+ #include "gpu-cache.h"
+ #include "shader.h"
+ 
+@@ -713,6 +714,7 @@
+  protected:
+   ///// data /////
+   class simt_core_cluster **m_cluster;
++  std::unique_ptr<memory_pool> m_memory_pool;
+   class memory_partition_unit **m_memory_partition_unit;
+   class memory_sub_partition **m_memory_sub_partition;
+ 
+--- a/src/gpgpu-sim/l2cache.cc
++++ b/src/gpgpu-sim/l2cache.cc
+@@ -219,34 +219,19 @@
+                                 sid, tpc, m_memory_config, cycle, original_mf);
+   return mf;
+ }
+-memory_partition_unit::memory_partition_unit(unsigned partition_id,
+-                                             const memory_config *config,
+-                                             memory_stats_manager_t *stats,
+-                                             class gpgpu_sim *gpu)
+-    : : m_id(partition_id),              // 本 partition 编号（= DRAM channel 号，与内部
+-                                   // dram_t::id 一致；0 ~ gpgpu_n_mem-1）
+-      m_config(config),            // 全局内存配置指针（memory_config：DRAM 时序、
+-                                   // L2 参数、地址映射等，源自 gpgpusim.config；
+-                                   // 生命周期由 gpgpu_sim_config 管理，本类不拥有）
+-      m_mem_stats(stats),          // 访存延迟统计管理器指针（最终输出到统计文件）
+-      m_arbitration_metadata(config),  // 互连仲裁元数据（按 config 里的 subpartition
+-                                   // 数初始化；icnt 仲裁时用来判断各 subpartition 的
+-                                   // 队列状态，决定哪个 subpartition 获得互连通道）
+-      m_gpu(gpu)                   // 所属 GPU 指针：本类多处使用——取全局周期做
+-                                   // 时间戳、经 icnt 发送 L2 回填响应等；
+-                                   // 与 dram_t::m_gpu 同类的耦合点，解耦时一并处理
+-                                    {
+-  m_dram = new dram_t(m_id, m_config, stats, this, gpu);
+-// 上层在构造下层的瞬间把 this 递过去，等于说："这是我家的地址，以后有事打这个电话。"这就是之前说的反向关联指针的出处。
++memory_partition_unit::memory_partition_unit(
++    unsigned partition_id, const memory_config *config,
++    memory_stats_manager_t *stats, gpgpu_sim *gpu,
++    memory_pool &pool, unsigned channel_id)
++    : m_id(partition_id), m_config(config), m_mem_stats(stats), m_gpu(gpu),
++      m_pool(pool), m_channel_id(channel_id) {
+   m_sub_partition = new memory_sub_partition
+       *[m_config->m_n_sub_partition_per_memory_channel];
+-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+-       p++) {
+-    unsigned sub_partition_id =
+-        m_id * m_config->m_n_sub_partition_per_memory_channel + p;
+-    m_sub_partition[p] =
+-        new memory_sub_partition(sub_partition_id, m_config, stats, gpu);
+-  }
++  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel; ++p) {
++    unsigned id = m_id * m_config->m_n_sub_partition_per_memory_channel + p;
++    m_sub_partition[p] = new memory_sub_partition(id, config, stats, gpu);
++  }
++  m_pool.register_client(m_channel_id, *this);
+ }
+ 
+ void memory_partition_unit::handle_memcpy_to_gpu(
+@@ -263,82 +248,12 @@
+ }
+ 
+ memory_partition_unit::~memory_partition_unit() {
+-  delete m_dram;
++  m_pool.unregister_client(*this);
+   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+        p++) {
+     delete m_sub_partition[p];
+   }
+   delete[] m_sub_partition;
+-}
+-
+-memory_partition_unit::arbitration_metadata::arbitration_metadata(
+-    const memory_config *config)
+-    : m_last_borrower(config->m_n_sub_partition_per_memory_channel - 1),
+-      m_private_credit(config->m_n_sub_partition_per_memory_channel, 0),
+-      m_shared_credit(0) {
+-  // each sub partition get at least 1 credit for forward progress
+-  // the rest is shared among with other partitions
+-  m_private_credit_limit = 1;
+-  m_shared_credit_limit = config->gpgpu_frfcfs_dram_sched_queue_size +
+-                          config->gpgpu_dram_return_queue_size -
+-                          (config->m_n_sub_partition_per_memory_channel - 1);
+-  if (config->seperate_write_queue_enabled)
+-    m_shared_credit_limit += config->gpgpu_frfcfs_dram_write_queue_size;
+-  if (config->gpgpu_frfcfs_dram_sched_queue_size == 0 or
+-      config->gpgpu_dram_return_queue_size == 0) {
+-    m_shared_credit_limit =
+-        0;  // no limit if either of the queue has no limit in size
+-  }
+-  assert(m_shared_credit_limit >= 0);
+-}
+-
+-bool memory_partition_unit::arbitration_metadata::has_credits(
+-    int inner_sub_partition_id) const {
+-  int spid = inner_sub_partition_id;
+-  if (m_private_credit[spid] < m_private_credit_limit) {
+-    return true;
+-  } else if (m_shared_credit_limit == 0 ||
+-             m_shared_credit < m_shared_credit_limit) {
+-    return true;
+-  } else {
+-    return false;
+-  }
+-}
+-
+-void memory_partition_unit::arbitration_metadata::borrow_credit(
+-    int inner_sub_partition_id) {
+-  int spid = inner_sub_partition_id;
+-  if (m_private_credit[spid] < m_private_credit_limit) {
+-    m_private_credit[spid] += 1;
+-  } else if (m_shared_credit_limit == 0 ||
+-             m_shared_credit < m_shared_credit_limit) {
+-    m_shared_credit += 1;
+-  } else {
+-    assert(0 && "DRAM arbitration error: Borrowing from depleted credit!");
+-  }
+-  m_last_borrower = spid;
+-}
+-
+-void memory_partition_unit::arbitration_metadata::return_credit(
+-    int inner_sub_partition_id) {
+-  int spid = inner_sub_partition_id;
+-  if (m_private_credit[spid] > 0) {
+-    m_private_credit[spid] -= 1;
+-  } else {
+-    m_shared_credit -= 1;
+-  }
+-  assert((m_shared_credit >= 0) &&
+-         "DRAM arbitration error: Returning more than available credits!");
+-}
+-
+-void memory_partition_unit::arbitration_metadata::print(FILE *fp) const {
+-  fprintf(fp, "private_credit = ");
+-  for (unsigned p = 0; p < m_private_credit.size(); p++) {
+-    fprintf(fp, "%d ", m_private_credit[p]);
+-  }
+-  fprintf(fp, "(limit = %d)\n", m_private_credit_limit);
+-  fprintf(fp, "shared_credit = %d (limit = %d)\n", m_shared_credit,
+-          m_shared_credit_limit);
+ }
+ 
+ bool memory_partition_unit::busy() const {
+@@ -360,218 +275,59 @@
+ }
+ 
+ void memory_partition_unit::visualizer_print(gzFile visualizer_file) const {
+-  m_dram->visualizer_print(visualizer_file);
++  m_pool.visualizer_print(m_channel_id, visualizer_file);
+   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+        p++) {
+     m_sub_partition[p]->visualizer_print(visualizer_file);
+   }
+ }
+ 
+-// determine whether a given subpartition can issue to DRAM
+-bool memory_partition_unit::can_issue_to_dram(int inner_sub_partition_id) {
+-  int spid = inner_sub_partition_id;
+-  bool sub_partition_contention = m_sub_partition[spid]->dram_L2_queue_full();
+-  bool has_dram_resource = m_arbitration_metadata.has_credits(spid);
+-
+-  MEMPART_GPPRINTF(
+-      "sub partition %d sub_partition_contention=%c has_dram_resource=%c\n",
+-      spid, (sub_partition_contention) ? 'T' : 'F',
+-      (has_dram_resource) ? 'T' : 'F');
+-
+-  return (has_dram_resource && !sub_partition_contention);
+-}
+-
+-int memory_partition_unit::global_sub_partition_id_to_local_id(
+-    int global_sub_partition_id) const {
+-  return (global_sub_partition_id -
+-          m_id * m_config->m_n_sub_partition_per_memory_channel);
+-}
+-
+-void memory_partition_unit::simple_dram_model_cycle() {
+-  // pop completed memory request from dram and push it to dram-to-L2 queue
+-  // of the original sub partition
+-  if (!m_dram_latency_queue.empty() &&
+-      ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
+-       m_dram_latency_queue.front().ready_cycle)) {
+-    mem_fetch *mf_return = m_dram_latency_queue.front().req;
+-    if (mf_return->get_access_type() != L1_WRBK_ACC &&
+-        mf_return->get_access_type() != L2_WRBK_ACC) {
+-      mf_return->set_reply();
+-
+-      unsigned dest_global_spid = mf_return->get_sub_partition_id();
+-      int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
+-      assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
+-      if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
+-        if (mf_return->get_access_type() == L1_WRBK_ACC) {
+-          m_sub_partition[dest_spid]->set_done(mf_return);
+-          delete mf_return;
+-        } else {
+-          m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
+-          mf_return->set_status(
+-              IN_PARTITION_DRAM_TO_L2_QUEUE,
+-              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+-          m_arbitration_metadata.return_credit(dest_spid);
+-          MEMPART_GPPRINTF(
+-              "mem_fetch request %p return from dram to sub partition %d\n",
+-              mf_return, dest_spid);
+-        }
+-        m_dram_latency_queue.pop_front();
+-      }
+-
+-    } else {
+-      this->set_done(mf_return);
+-      delete mf_return;
+-      m_dram_latency_queue.pop_front();
+-    }
+-  }
+-
+-  // mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
+-  // if( !m_dram->full(mf->is_write()) ) {
+-  // L2->DRAM queue to DRAM latency queue
+-  // Arbitrate among multiple L2 subpartitions
+-  int last_issued_partition = m_arbitration_metadata.last_borrower();
+-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+-       p++) {
+-    int spid = (p + last_issued_partition + 1) %
+-               m_config->m_n_sub_partition_per_memory_channel;
+-    if (!m_sub_partition[spid]->L2_dram_queue_empty() &&
+-        can_issue_to_dram(spid)) {
+-      mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
+-      if (m_dram->full(mf->is_write())) break;
+-
+-      m_sub_partition[spid]->L2_dram_queue_pop();
+-      MEMPART_GPPRINTF(
+-          "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
+-          spid);
+-      dram_delay_t d;
+-      d.req = mf;
+-      // dram_latency_queue
+-      d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+-                      m_config->dram_latency;
+-      // 当前这一轮/当前 kernel 仿真已经执行的 cycle 数+之前已经完成的仿真累计 cycle 数+一个内存请求从 L2→DRAM 队列出来之后，在真正允许进入详细 DRAM 模型之前，需要额外经历的固定延迟
+-      m_dram_latency_queue.push_back(d);
+-      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
+-                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+-      m_arbitration_metadata.borrow_credit(spid);
+-      break;  // the DRAM should only accept one request per cycle
+-    }
+-  }
+-  //}
+-}
+-
+-void memory_partition_unit::dram_cycle() {
+-  // pop completed memory request from dram and push it to dram-to-L2 queue
+-  // of the original sub partition
+-  mem_fetch *mf_return = m_dram->return_queue_top();
+-  if (mf_return) {
+-    unsigned dest_global_spid = mf_return->get_sub_partition_id();
+-    int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
+-    assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
+-    if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
+-      if (mf_return->get_access_type() == L1_WRBK_ACC) {
+-        m_sub_partition[dest_spid]->set_done(mf_return);
+-        delete mf_return;
+-      } else {
+-        m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
+-        mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
+-                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+-        m_arbitration_metadata.return_credit(dest_spid);
+-        MEMPART_GPPRINTF(
+-            "mem_fetch request %p return from dram to sub partition %d\n",
+-            mf_return, dest_spid);
+-      }
+-      m_dram->return_queue_pop();
+-    }
+-  } else {
+-    m_dram->return_queue_pop();
+-  }
+-
+-  m_dram->cycle();
+-  m_dram->dram_log(SAMPLELOG);
+-
+-  // mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
+-  // if( !m_dram->full(mf->is_write()) ) {
+-  // L2->DRAM queue to DRAM latency queue
+-  // Arbitrate among multiple L2 subpartitions
+-  int last_issued_partition = m_arbitration_metadata.last_borrower();
+-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+-       p++) {
+-    int spid = (p + last_issued_partition + 1) %
+-               m_config->m_n_sub_partition_per_memory_channel;
+-    if (!m_sub_partition[spid]->L2_dram_queue_empty() &&
+-        can_issue_to_dram(spid)) {
+-      mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
+-      if (m_dram->full(mf->is_write())) break;
+-
+-      m_sub_partition[spid]->L2_dram_queue_pop();
+-      MEMPART_GPPRINTF(
+-          "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
+-          spid);
+-      dram_delay_t d;
+-      d.req = mf;
+-      d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+-                      m_config->dram_latency;
+-      m_dram_latency_queue.push_back(d);
+-      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
+-                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+-      m_arbitration_metadata.borrow_credit(spid);
+-      break;  // the DRAM should only accept one request per cycle
+-    }
+-  }
+-  //}
+-
+-  // DRAM latency queue
+-  if (!m_dram_latency_queue.empty() &&
+-      ((m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) >=
+-       m_dram_latency_queue.front().ready_cycle) &&
+-      !m_dram->full(m_dram_latency_queue.front().req->is_write())) {
+-    mem_fetch *mf = m_dram_latency_queue.front().req;
+-    m_dram_latency_queue.pop_front();
+-    m_dram->push(mf);
+-  }
+-}
+-
+-void memory_partition_unit::set_done(mem_fetch *mf) {
+-  unsigned global_spid = mf->get_sub_partition_id();
+-  int spid = global_sub_partition_id_to_local_id(global_spid);
+-  assert(m_sub_partition[spid]->get_id() == global_spid);
+-  if (mf->get_access_type() == L1_WRBK_ACC ||
+-      mf->get_access_type() == L2_WRBK_ACC) {
+-    m_arbitration_metadata.return_credit(spid);
+-    MEMPART_GPPRINTF(
+-        "mem_fetch request %p return from dram to sub partition %d\n", mf,
+-        spid);
+-  }
+-  m_sub_partition[spid]->set_done(mf);
++int memory_partition_unit::global_sub_partition_id_to_local_id(int global_id) const {
++  return global_id - m_id * m_config->m_n_sub_partition_per_memory_channel;
++}
++
++unsigned memory_partition_unit::sub_partition_count() const {
++  return m_config->m_n_sub_partition_per_memory_channel;
++}
++bool memory_partition_unit::request_empty(unsigned local_id) const {
++  assert(local_id < sub_partition_count());
++  return m_sub_partition[local_id]->L2_dram_queue_empty();
++}
++mem_fetch *memory_partition_unit::request_top(unsigned local_id) const {
++  assert(local_id < sub_partition_count());
++  return m_sub_partition[local_id]->L2_dram_queue_top();
++}
++void memory_partition_unit::request_pop(unsigned local_id) {
++  assert(local_id < sub_partition_count());
++  m_sub_partition[local_id]->L2_dram_queue_pop();
++}
++bool memory_partition_unit::response_full(unsigned local_id) const {
++  assert(local_id < sub_partition_count());
++  return m_sub_partition[local_id]->dram_L2_queue_full();
++}
++void memory_partition_unit::response_push(unsigned local_id, mem_fetch *request) {
++  assert(local_id < sub_partition_count());
++  assert(m_sub_partition[local_id]->get_id() == request->get_sub_partition_id());
++  m_sub_partition[local_id]->dram_L2_queue_push(request);
++}
++void memory_partition_unit::writeback_done(unsigned local_id, mem_fetch *request) {
++  assert(local_id < sub_partition_count());
++  assert(m_sub_partition[local_id]->get_id() == request->get_sub_partition_id());
++  m_sub_partition[local_id]->set_done(request);
+ }
+ 
+ void memory_partition_unit::set_dram_power_stats(
+     unsigned &n_cmd, unsigned &n_activity, unsigned &n_nop, unsigned &n_act,
+     unsigned &n_pre, unsigned &n_rd, unsigned &n_wr, unsigned &n_wr_WB,
+     unsigned &n_req) const {
+-  m_dram->set_dram_power_stats(n_cmd, n_activity, n_nop, n_act, n_pre, n_rd,
+-                               n_wr, n_wr_WB, n_req);
+-}
+-
++  m_pool.set_dram_power_stats(m_channel_id, n_cmd, n_activity, n_nop, n_act,
++                              n_pre, n_rd, n_wr, n_wr_WB, n_req);
++}
+ void memory_partition_unit::print(FILE *fp) const {
+   fprintf(fp, "Memory Partition %u: \n", m_id);
+-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+-       p++) {
++  for (unsigned p = 0; p < sub_partition_count(); ++p)
+     m_sub_partition[p]->print(fp);
+-  }
+-  fprintf(fp, "In Dram Latency Queue (total = %zd): \n",
+-          m_dram_latency_queue.size());
+-  for (std::list<dram_delay_t>::const_iterator mf_dlq =
+-           m_dram_latency_queue.begin();
+-       mf_dlq != m_dram_latency_queue.end(); ++mf_dlq) {
+-    mem_fetch *mf = mf_dlq->req;
+-    fprintf(fp, "Ready @ %llu - ", mf_dlq->ready_cycle);
+-    if (mf)
+-      mf->print(fp);
+-    else
+-      fprintf(fp, " <NULL mem_fetch?>\n");
+-  }
+-  m_dram->print(fp);
++  m_pool.print(m_channel_id, fp);
+ }
+ 
+ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
+--- a/src/gpgpu-sim/l2cache.h
++++ b/src/gpgpu-sim/l2cache.h
+@@ -33,7 +33,7 @@
+ #define MC_PARTITION_INCLUDED
+ 
+ #include "../abstract_hardware_model.h"
+-#include "dram.h"
++#include "memory_pool.h"
+ 
+ #include <list>
+ #include <queue>
+@@ -84,111 +84,49 @@
+   const memory_config *m_memory_config;
+ };
+ 
+-// Memory partition unit contains all the units assolcated with a single DRAM
+-// channel.
+-// - It arbitrates the DRAM channel among multiple sub partitions.
+-// - It does not connect directly with the interconnection network.
+-class memory_partition_unit {
++// GPU-side L2 frontend. DRAM ownership, arbitration and timing live in memory_pool.
++class memory_partition_unit : public memory_pool_client {
+  public:
+   memory_partition_unit(unsigned partition_id, const memory_config *config,
+-                        memory_stats_manager_t *stats, class gpgpu_sim *gpu);
+-  ~memory_partition_unit();
+-
+-  // ============ 状态查询 ============
+-  bool busy() const;   // 本 partition 是否还有未完成工作（L2 MSHR/mshr 表非空
+-                       // 或 DRAM 队列非空），仿真结束/flush 时用来判断能否安全退出
+-
+-  // ============ 每周期驱动（gpgpu_sim::cycle 调用，顺序即流水） ============
+-  void cache_cycle(unsigned cycle);        // L2 阶段：驱动所有 subpartition 的 L2 cache
+-                                           // 周期（tag 查找、回填、MSHR 处理）
+-  void dram_cycle();                       // DRAM 阶段：先检查 dram 返回队列、
+-                                           // 把 L2 miss 请求（经 m_dram_latency_queue
+-                                           // 延迟后）推入 dram_t，再调用 m_dram->cycle()
+-  void simple_dram_model_cycle();          // FlashGPU 扩展：简化 DRAM 模型的驱动函数
+-                                           // （用固定延迟替代完整 dram_t 时序，开关在 config）
+-
+-  void set_done(mem_fetch *mf);            // dram_t 的写回完成回调：释放该 mem_fetch 在
+-                                           // L2/MSHR 中占用的资源（dram_t 经 m_memory_partition_unit
+-                                           // 回指指针调到这里）——方案 A 中它实现 IDramWritebackSink
+-
+-  // ============ 统计与可视化 ============
+-  void visualizer_print(gzFile visualizer_file) const;  // 输出本 partition 的窗口统计到 gzip 可视化文件
+-  void print_stat(FILE *fp) { m_dram->print_stat(fp); } // 直接委托给 dram_t 打印 channel 统计
+-                                                        // （解耦后应改由 MemoryPool 汇总调用）
+-  void visualize() const { m_dram->visualize(); }       // 直接委托给 dram_t 做逐 bank 状态打印
+-  void print(FILE *fp) const;                           // 打印 partition 级汇总（L2 统计 + 转发给 dram）
+-
++                        memory_stats_manager_t *stats, class gpgpu_sim *gpu,
++                        memory_pool &pool, unsigned channel_id);
++  ~memory_partition_unit() override;
++
++  bool busy() const;
++  void cache_cycle(unsigned cycle);
++  void visualizer_print(gzFile visualizer_file) const;
++  void print_stat(FILE *fp) { m_pool.print_stat(m_channel_id, fp); }
++  void visualize() const { m_pool.visualize(m_channel_id); }
++  void print(FILE *fp) const;
+   void handle_memcpy_to_gpu(size_t dst_start_addr, unsigned subpart_id,
+-                            mem_access_sector_mask_t mask);  // 处理 cudaMemcpy H2D：把 memcpy 请求
+-                                           // 包装成 mem_fetch 注入指定 subpartition 的 L2，
+-                                           // 让显式拷贝也走统一的 cache 通路
+-
+-  class memory_sub_partition *get_sub_partition(int sub_partition_id) {
+-    return m_sub_partition[sub_partition_id];  // 按本地 id 取 subpartition 对象
+-  }
+-
+-  // ============ 功耗模型接口 ============
++                            mem_access_sector_mask_t mask);
++  class memory_sub_partition *get_sub_partition(int local_id) {
++    return m_sub_partition[local_id];
++  }
+   void set_dram_power_stats(unsigned &n_cmd, unsigned &n_activity,
+                             unsigned &n_nop, unsigned &n_act, unsigned &n_pre,
+                             unsigned &n_rd, unsigned &n_wr, unsigned &n_wr_WB,
+-                            unsigned &n_req) const;  // 把本 channel 的命令计数"导出"给
+-                                           // McPAT/AccelWattch 功耗模型（注意全是
+-                                           // 引用传出，填的是 dram_t 的统计值）
+-
+-  int global_sub_partition_id_to_local_id(int global_sub_partition_id) const;
+-                                           // 全局 subpartition 号 → 本 partition 内局部号
+-                                           // 的换算（全局 id = partition_id * 每 partition
+-                                           // subpartition 数 + 局部号；icnt 路由用全局号）
+-
+-  unsigned get_mpid() const { return m_id; }        // 返回本 partition（channel）编号
+-  class gpgpu_sim *get_mgpu() const { return m_gpu; }  // 返回所属 GPU 指针（dram_t
+-                                           // 曾借它取时钟/发 icnt，解耦后删除）
++                            unsigned &n_req) const;
++  int global_sub_partition_id_to_local_id(int global_id) const;
++  unsigned get_mpid() const { return m_id; }
++
++  // memory_pool_client: local IDs belong to this client, not to a DRAM channel.
++  unsigned sub_partition_count() const override;
++  bool request_empty(unsigned local_id) const override;
++  mem_fetch *request_top(unsigned local_id) const override;
++  void request_pop(unsigned local_id) override;
++  bool response_full(unsigned local_id) const override;
++  void response_push(unsigned local_id, mem_fetch *request) override;
++  void writeback_done(unsigned local_id, mem_fetch *request) override;
+ 
+  private:
+-  unsigned m_id;                           // partition 编号 = DRAM channel 号（全局化后由 MemoryPool 分配）
+-  const memory_config *m_config;           // 内存配置（DRAM 时序 + L2 参数，外部持有）
+-  memory_stats_manager_t *m_mem_stats;     // 延迟统计管理器
+-  class memory_sub_partition **m_sub_partition;  // subpartition 指针数组（每 partition 含
+-                                           // m_config->m_n_sub_partition_per_memory_channel 个，
+-                                           // 各带一个 L2 bank）
+-  class dram_t *m_dram;                    // 本 partition 的 DRAM channel —— 解耦的核心：
+-                                           // 从"我拥有它"变成"MemoryPool 拥有它，我只持接口"
+-
+-  // ============ 互连仲裁元数据（credit 制，防止某 subpartition 饿死共享互连通道） ============
+-  class arbitration_metadata {
+-   public:
+-    arbitration_metadata(const memory_config *config);  // 按 config 初始化共享/私有额度上限
+-
+-    bool has_credits(int inner_sub_partition_id) const;  // 该 subpartition 还能借额度吗
+-    void borrow_credit(int inner_sub_partition_id);      // 占用一个额度（发一个包）
+-    void return_credit(int inner_sub_partition_id);      // 归还额度（包送达互连）
+-
+-    int last_borrower() const { return m_last_borrower; }  // 上次借额度的 subpartition（RR 起点）
+-
+-    void print(FILE *fp) const;
+-
+-   private:
+-    int m_last_borrower;        // 上次借额度的 subpartition id（仲裁轮询指针）
+-    int m_shared_credit_limit;  // 共享额度池上限（整 partition 在互连上最多挂起多少包）
+-    int m_private_credit_limit; // 每个 subpartition 的私有额度上限（防单个饿死其余）
+-
+-    std::vector<int> m_private_credit;  // 各 subpartition 当前已借私有额度
+-    int m_shared_credit;                // 共享池当前剩余额度
+-  };
+-  arbitration_metadata m_arbitration_metadata;  // 本 partition 的仲裁状态实例
+-
+-  // 判断指定 subpartition 当前是否允许向 DRAM 发请求（综合 dram_t 背压与调度策略）
+-  bool can_issue_to_dram(int inner_sub_partition_id);
+-
+-  // 建模 L2→DRAM 之间的调度器固定延迟：L2 miss 不直接进 dram_t，
+-  // 先在此排队，ready_cycle 到期后才 push 进 dram
+-  struct dram_delay_t {
+-    unsigned long long ready_cycle;   // 到期周期（到达时刻 + 固定调度延迟）
+-    class mem_fetch *req;             // 被延迟的请求
+-  };
+-  std::list<dram_delay_t> m_dram_latency_queue;  // 延迟队列（DRAM 调度器流水线的抽象）
+-
+-  class gpgpu_sim *m_gpu;            // 所属 GPU：发 icnt 响应、取时钟用（解耦时一并处理）
++  unsigned m_id;
++  const memory_config *m_config;
++  memory_stats_manager_t *m_mem_stats;
++  class memory_sub_partition **m_sub_partition;
++  class gpgpu_sim *m_gpu;
++  memory_pool &m_pool;  // Borrowed; the simulation driver owns the pool.
++  unsigned m_channel_id;
+ };
+ 
+ class memory_sub_partition {
+@@ -234,7 +172,7 @@
+ 
+   // ============ 到 DRAM 方向的队列接口（解耦的关键接缝！） ============
+   bool L2_dram_queue_empty() const;          // L2 miss 队列（m_L2_dram_queue）是否空
+-  class mem_fetch *L2_dram_queue_top() const;// 窥探队头（memory_partition_unit::dram_cycle
++  class mem_fetch *L2_dram_queue_top() const;// 窥探队头（memory_pool::cycle
+                                              // 从这里取请求，经延迟队列推入 dram_t）
+   void L2_dram_queue_pop();                  // 弹出队头
+ 
+--- /dev/null
++++ b/src/gpgpu-sim/memory_pool.cc
+@@ -0,0 +1,289 @@
++// The channel pipeline is migrated from l2cache.cc. Its ordering, admission
++// limits and legacy single-GPU address mapping are deliberately preserved.
++#include "memory_pool.h"
++
++#include <cassert>
++#include <list>
++#include <unordered_map>
++#include "dram.h"
++#include "gpu-sim.h"
++#include "mem_fetch.h"
++
++struct memory_pool::channel_state : dram_context {
++  struct endpoint {
++    memory_pool_client *client;
++    unsigned local_id;
++  };
++  struct delayed_request {
++    unsigned long long ready_cycle;
++    mem_fetch *request;
++  };
++
++  channel_state(memory_pool &owner, unsigned id, const memory_config *config,
++                memory_stats_manager_t *stats)
++      : pool(owner), config(config),
++        dram(new dram_t(id, config, stats, this)) {}
++
++  unsigned long long current_cycle() const override {
++    return pool.m_current_cycle;
++  }
++  unsigned long long kernel_cycle() const override {
++    return pool.m_kernel_cycle;
++  }
++
++  void initialize_credits() {
++    private_credit.assign(endpoints.size(), 0);
++    last_borrower = endpoints.empty() ? 0 : endpoints.size() - 1;
++    shared_limit = static_cast<int>(config->gpgpu_frfcfs_dram_sched_queue_size)
++                 + static_cast<int>(config->gpgpu_dram_return_queue_size)
++                 - (static_cast<int>(endpoints.size()) - 1);
++    if (config->seperate_write_queue_enabled)
++      shared_limit += config->gpgpu_frfcfs_dram_write_queue_size;
++    if (config->gpgpu_frfcfs_dram_sched_queue_size == 0 ||
++        config->gpgpu_dram_return_queue_size == 0)
++      shared_limit = 0;
++    assert(shared_limit >= 0);
++  }
++
++  bool has_credit(unsigned slot) const {
++    return private_credit[slot] < 1 || shared_limit == 0 ||
++           shared_credit < shared_limit;
++  }
++  void borrow_credit(unsigned slot) {
++    assert(has_credit(slot));
++    if (private_credit[slot] < 1)
++      ++private_credit[slot];
++    else
++      ++shared_credit;
++    last_borrower = slot;
++  }
++  void return_credit(unsigned slot) {
++    if (private_credit[slot] > 0)
++      --private_credit[slot];
++    else
++      --shared_credit;
++    assert(shared_credit >= 0);
++  }
++
++  unsigned source(mem_fetch *request) const {
++    const auto found = origins.find(request);
++    assert(found != origins.end());
++    return found->second;
++  }
++
++  bool deliver_response(mem_fetch *request) {
++    const unsigned slot = source(request);
++    const endpoint &destination = endpoints[slot];
++    assert(destination.client);
++    if (destination.client->response_full(destination.local_id)) {
++      ++counts.blocked_responses;
++      return false;
++    }
++    destination.client->response_push(destination.local_id, request);
++    request->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE, current_cycle());
++    return_credit(slot);
++    origins.erase(request);
++    ++counts.responses;
++    if (request->get_type() == WRITE_ACK) ++counts.write_acks;
++    return true;
++  }
++
++  void complete_writeback(mem_fetch *request) override {
++    const unsigned slot = source(request);
++    const endpoint &destination = endpoints[slot];
++    assert(destination.client);
++    assert(request->get_access_type() == L1_WRBK_ACC ||
++           request->get_access_type() == L2_WRBK_ACC);
++    return_credit(slot);
++    destination.client->writeback_done(destination.local_id, request);
++    origins.erase(request);
++    ++counts.writebacks;
++    if (request->get_access_type() == L1_WRBK_ACC)
++      ++counts.l1_writebacks;
++    else
++      ++counts.l2_writebacks;
++    // The DRAM completion path deletes the request after this callback.
++  }
++
++  void arbitrate() {
++    const unsigned count = endpoints.size();
++    const unsigned previous = last_borrower;
++    for (unsigned p = 0; p < count; ++p) {
++      const unsigned slot = (p + previous + 1) % count;
++      const endpoint &candidate = endpoints[slot];
++      if (!candidate.client || candidate.client->request_empty(candidate.local_id) ||
++          !has_credit(slot) ||
++          candidate.client->response_full(candidate.local_id))
++        continue;
++      mem_fetch *request = candidate.client->request_top(candidate.local_id);
++      // Preserve the legacy head-of-line policy: stop on this selected
++      // candidate when its read/write scheduler queue is full.
++      if (dram->full(request->is_write())) break;
++      candidate.client->request_pop(candidate.local_id);
++      const bool inserted = origins.emplace(request, slot).second;
++      assert(inserted);
++      latency_queue.push_back(
++          {current_cycle() + config->dram_latency, request});
++      request->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE, current_cycle());
++      borrow_credit(slot);
++      ++counts.accepted;
++      break;  // One accepted request per channel per DRAM clock event.
++    }
++  }
++
++  void cycle() {
++    if (config->simple_dram_model) {
++      if (!latency_queue.empty() &&
++          current_cycle() >= latency_queue.front().ready_cycle) {
++        mem_fetch *request = latency_queue.front().request;
++        if (request->get_access_type() == L1_WRBK_ACC ||
++            request->get_access_type() == L2_WRBK_ACC) {
++          complete_writeback(request);
++          delete request;
++          latency_queue.pop_front();
++        } else {
++          request->set_reply();
++          if (deliver_response(request)) latency_queue.pop_front();
++        }
++      }
++      arbitrate();
++    } else {
++      // Preserve the legacy sequence within EACH channel:
++      // return response -> advance DRAM -> arbitrate -> submit ready request.
++      mem_fetch *request = dram->return_queue_top();
++      if (!request || deliver_response(request)) dram->return_queue_pop();
++      dram->cycle();
++      dram->dram_log(SAMPLELOG);
++      arbitrate();
++      if (!latency_queue.empty() &&
++          current_cycle() >= latency_queue.front().ready_cycle &&
++          !dram->full(latency_queue.front().request->is_write())) {
++        request = latency_queue.front().request;
++        latency_queue.pop_front();
++        dram->push(request);
++      }
++    }
++    assert(counts.accepted ==
++           counts.responses + counts.writebacks + origins.size());
++  }
++
++  memory_pool &pool;
++  const memory_config *config;
++  std::unique_ptr<dram_t> dram;
++  std::vector<endpoint> endpoints;
++  std::list<delayed_request> latency_queue;
++  // Track the actual source independently of channel and GPU-local L2 IDs.
++  std::unordered_map<mem_fetch *, unsigned> origins;
++  std::vector<int> private_credit;
++  unsigned last_borrower = 0;
++  int shared_credit = 0;
++  int shared_limit = 0;
++  counters counts;
++};
++
++memory_pool::memory_pool(unsigned count, const memory_config *config,
++                         memory_stats_manager_t *stats)
++    : m_config(config) {
++  assert(config && stats && count);
++  for (unsigned id = 0; id < count; ++id)
++    m_channels.emplace_back(new channel_state(*this, id, config, stats));
++}
++
++memory_pool::~memory_pool() = default;
++
++memory_pool::channel_state &memory_pool::channel(unsigned id) const {
++  assert(id < m_channels.size());
++  return *m_channels[id];
++}
++
++void memory_pool::register_client(unsigned id, memory_pool_client &client) {
++  assert(!m_sealed);
++  channel_state &state = channel(id);
++  for (const auto &ep : state.endpoints) assert(ep.client != &client);
++  for (unsigned local = 0; local < client.sub_partition_count(); ++local)
++    state.endpoints.push_back({&client, local});
++}
++
++void memory_pool::unregister_client(memory_pool_client &client) {
++  for (auto &state : m_channels) {
++    for (const auto &origin : state->origins)
++      assert(state->endpoints[origin.second].client != &client);
++    for (auto &ep : state->endpoints)
++      if (ep.client == &client) ep.client = nullptr;
++  }
++}
++
++void memory_pool::seal() {
++  assert(!m_sealed);
++  for (auto &state : m_channels) state->initialize_credits();
++  m_sealed = true;
++}
++
++void memory_pool::cycle(unsigned long long kernel,
++                        unsigned long long prior) {
++  assert(m_sealed);
++  m_kernel_cycle = kernel;
++  m_current_cycle = kernel + prior;
++  for (auto &state : m_channels) state->cycle();
++}
++
++bool memory_pool::busy() const {
++  for (const auto &state : m_channels)
++    if (!state->origins.empty()) return true;
++  return false;
++}
++
++memory_pool::counters memory_pool::get_counters() const {
++  counters total;
++  for (const auto &state : m_channels) {
++    total.accepted += state->counts.accepted;
++    total.responses += state->counts.responses;
++    total.writebacks += state->counts.writebacks;
++    total.write_acks += state->counts.write_acks;
++    total.l1_writebacks += state->counts.l1_writebacks;
++    total.l2_writebacks += state->counts.l2_writebacks;
++    total.blocked_responses += state->counts.blocked_responses;
++    total.pending += state->origins.size();
++  }
++  return total;
++}
++
++void memory_pool::print_summary(FILE *fp) const {
++  const counters total = get_counters();
++  fprintf(fp, "memory_pool_accepted = %llu\n", total.accepted);
++  fprintf(fp, "memory_pool_responses = %llu\n", total.responses);
++  fprintf(fp, "memory_pool_writebacks = %llu\n", total.writebacks);
++  fprintf(fp, "memory_pool_write_acks = %llu\n", total.write_acks);
++  fprintf(fp, "memory_pool_l1_writebacks = %llu\n", total.l1_writebacks);
++  fprintf(fp, "memory_pool_l2_writebacks = %llu\n", total.l2_writebacks);
++  fprintf(fp, "memory_pool_blocked_responses = %llu\n", total.blocked_responses);
++  fprintf(fp, "memory_pool_pending = %llu\n", total.pending);
++}
++
++void memory_pool::print(unsigned id, FILE *fp) const {
++  const channel_state &state = channel(id);
++  fprintf(fp, "In Dram Latency Queue (total = %zd): \n",
++          state.latency_queue.size());
++  for (const auto &delayed : state.latency_queue) {
++    fprintf(fp, "Ready @ %llu - ", delayed.ready_cycle);
++    delayed.request->print(fp);
++  }
++  state.dram->print(fp);
++}
++
++void memory_pool::print_stat(unsigned id, FILE *fp) {
++  channel(id).dram->print_stat(fp);
++}
++void memory_pool::visualize(unsigned id) const {
++  channel(id).dram->visualize();
++}
++void memory_pool::visualizer_print(unsigned id, gzFile file) const {
++  channel(id).dram->visualizer_print(file);
++}
++void memory_pool::set_dram_power_stats(
++    unsigned id, unsigned &cmd, unsigned &activity, unsigned &nop, unsigned &act,
++    unsigned &pre, unsigned &rd, unsigned &wr, unsigned &wr_wb,
++    unsigned &req) const {
++  channel(id).dram->set_dram_power_stats(cmd, activity, nop, act, pre, rd, wr,
++                                        wr_wb, req);
++}
+--- /dev/null
++++ b/src/gpgpu-sim/memory_pool.h
+@@ -0,0 +1,65 @@
++// Pooled ownership and cycle orchestration for simulated DRAM channels.
++#ifndef FLASHGPU_MEMORY_POOL_H
++#define FLASHGPU_MEMORY_POOL_H
++
++#include <cstdio>
++#include <memory>
++#include <vector>
++#include <zlib.h>
++#include "memory_pool_interface.h"
++
++class memory_config;
++class memory_stats_manager_t;
++
++class memory_pool {
++ public:
++  struct counters {
++    unsigned long long accepted = 0;
++    unsigned long long responses = 0;
++    unsigned long long writebacks = 0;
++    unsigned long long write_acks = 0;
++    unsigned long long l1_writebacks = 0;
++    unsigned long long l2_writebacks = 0;
++    unsigned long long blocked_responses = 0;
++    unsigned long long pending = 0;
++  };
++
++  memory_pool(unsigned channel_count, const memory_config *config,
++              memory_stats_manager_t *stats);
++  ~memory_pool();
++  memory_pool(const memory_pool &) = delete;
++  memory_pool &operator=(const memory_pool &) = delete;
++
++  // Multiple clients may register against one channel. The single-GPU adapter
++  // initially uses the legacy identity mapping. Registration precedes seal().
++  void register_client(unsigned channel_id, memory_pool_client &client);
++  void unregister_client(memory_pool_client &client);
++  void seal();
++
++  // Called exactly once per DRAM clock event by the simulation driver.
++  // Keep kernel-local and cumulative time separate to preserve legacy stats.
++  void cycle(unsigned long long kernel_cycle, unsigned long long prior_cycles);
++  bool busy() const;
++  counters get_counters() const;
++  void print_summary(FILE *fp) const;
++
++  void print(unsigned channel_id, FILE *fp) const;
++  void print_stat(unsigned channel_id, FILE *fp);
++  void visualize(unsigned channel_id) const;
++  void visualizer_print(unsigned channel_id, gzFile file) const;
++  void set_dram_power_stats(unsigned channel_id, unsigned &cmd,
++                            unsigned &activity, unsigned &nop, unsigned &act,
++                            unsigned &pre, unsigned &rd, unsigned &wr,
++                            unsigned &wr_wb, unsigned &req) const;
++
++ private:
++  struct channel_state;
++  channel_state &channel(unsigned id) const;
++  const memory_config *m_config;
++  bool m_sealed = false;
++  unsigned long long m_current_cycle = 0;
++  unsigned long long m_kernel_cycle = 0;
++  std::vector<std::unique_ptr<channel_state>> m_channels;
++};
++
++#endif
+--- /dev/null
++++ b/src/gpgpu-sim/memory_pool_interface.h
+@@ -0,0 +1,31 @@
++// Interfaces at the L2 / pooled DRAM boundary.
++#ifndef FLASHGPU_MEMORY_POOL_INTERFACE_H
++#define FLASHGPU_MEMORY_POOL_INTERFACE_H
++
++class mem_fetch;
++
++// A client owns its L2 queues and request trackers. The pool borrows this
++// interface; clients must outlive their registrations and outstanding requests.
++class memory_pool_client {
++ public:
++  virtual ~memory_pool_client() = default;
++  virtual unsigned sub_partition_count() const = 0;
++  virtual bool request_empty(unsigned local_id) const = 0;
++  virtual mem_fetch *request_top(unsigned local_id) const = 0;
++  virtual void request_pop(unsigned local_id) = 0;
++  virtual bool response_full(unsigned local_id) const = 0;
++  virtual void response_push(unsigned local_id, mem_fetch *request) = 0;
++  virtual void writeback_done(unsigned local_id, mem_fetch *request) = 0;
++};
++
++// DRAM obtains time and writeback completion through a channel context, without
++// depending on a particular GPU or memory_partition_unit.
++class dram_context {
++ public:
++  virtual ~dram_context() = default;
++  virtual unsigned long long current_cycle() const = 0;
++  virtual unsigned long long kernel_cycle() const = 0;
++  virtual void complete_writeback(mem_fetch *request) = 0;
++};
++
++#endif

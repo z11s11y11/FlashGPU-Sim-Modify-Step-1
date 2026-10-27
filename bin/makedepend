@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Generate the subset of makedepend output used by FlashGPU-Sim's Makefiles."""
+
+import os
+import subprocess
+import sys
+import tempfile
+
+
+def main():
+    output = None
+    prefix = ""
+    includes = []
+    sources = []
+    args = iter(sys.argv[1:])
+    for arg in args:
+        if arg.startswith("-f"):
+            output = arg[2:] or next(args)
+        elif arg.startswith("-p"):
+            prefix = arg[2:] or next(args)
+        elif arg.startswith("-I"):
+            # One legacy Makefile passes -I$(INCPATH), whose first entry
+            # already starts with -I.
+            includes.append(arg[2:] if arg.startswith("-I-I") else arg)
+        elif arg.startswith("-"):
+            print(f"unsupported makedepend option: {arg}", file=sys.stderr)
+            return 2
+        else:
+            sources.append(arg)
+
+    if not output:
+        print("makedepend: missing -f output file", file=sys.stderr)
+        return 2
+
+    directory = os.path.dirname(os.path.abspath(output))
+    if cuda_root := os.environ.get("CUDA_INSTALL_PATH"):
+        includes.append("-I" + os.path.join(cuda_root, "include"))
+    if object_root := os.environ.get("SIM_OBJ_FILES_DIR"):
+        includes.extend(("-I" + object_root, "-I" + os.path.join(object_root, "cuda-sim")))
+    if os.path.isdir("cacti"):
+        includes.append("-Icacti")
+    fd, temporary = tempfile.mkstemp(prefix=".makedepend-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            for source in sources:
+                target = prefix + os.path.splitext(source)[0] + ".o"
+                if not os.path.isfile(source) and os.path.isfile(os.path.join("cacti", source)):
+                    source = os.path.join("cacti", source)
+                if not os.path.isfile(source):
+                    continue
+                result = subprocess.run(
+                    ["g++", "-MM", "-MG", "-MT", target, *includes, source],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode:
+                    print(f"makedepend: failed to scan {source}", file=sys.stderr)
+                    print(result.stderr, file=sys.stderr, end="")
+                    return result.returncode
+                # GCC's -MG permits generated headers, but also lists missing
+                # system headers without a usable path. Keep only files make
+                # can currently see; generated headers have their own rules.
+                words = result.stdout.replace("\\\n", " ").split()
+                dependencies = [word for word in words[1:] if os.path.exists(word)]
+                stream.write(f"{target}: {' '.join(dependencies)}\n")
+        os.replace(temporary, output)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

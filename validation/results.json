@@ -1,0 +1,443 @@
+{
+  "work_root": "/home/zacharylinux/.cache/flashgpu-memorypool-l9sAcV",
+  "threads": 8,
+  "baseline_fix": "Only ': : m_id' -> ': m_id' in isolated baseline copy.",
+  "tutorials_included": true,
+  "tutorial_logs_reused": true,
+  "results": [
+    {
+      "case": "vector_add",
+      "passed": true,
+      "cycles": [
+        "30133"
+      ],
+      "kernel_cycles": [
+        "30133"
+      ],
+      "dram_channel_snapshots": 1,
+      "dram_requests": [
+        500000
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 0,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          500000
+        ],
+        "responses": [
+          500000
+        ],
+        "writebacks": [
+          0
+        ],
+        "write_acks": [
+          0
+        ],
+        "l1_writebacks": [
+          0
+        ],
+        "l2_writebacks": [
+          0
+        ],
+        "blocked_responses": [
+          0
+        ],
+        "pending": [
+          0
+        ]
+      }
+    },
+    {
+      "case": "gemm",
+      "passed": true,
+      "cycles": [
+        "78989"
+      ],
+      "kernel_cycles": [
+        "78989"
+      ],
+      "dram_channel_snapshots": 1,
+      "dram_requests": [
+        419840
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 1,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          419840
+        ],
+        "responses": [
+          419840
+        ],
+        "writebacks": [
+          0
+        ],
+        "write_acks": [
+          0
+        ],
+        "l1_writebacks": [
+          0
+        ],
+        "l2_writebacks": [
+          0
+        ],
+        "blocked_responses": [
+          0
+        ],
+        "pending": [
+          0
+        ]
+      }
+    },
+    {
+      "case": "sm90_stock",
+      "passed": true,
+      "cycles": [
+        "15247",
+        "26842"
+      ],
+      "kernel_cycles": [
+        "15247",
+        "11595"
+      ],
+      "dram_channel_snapshots": 2,
+      "dram_requests": [
+        4096,
+        4096
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 0,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          4096,
+          4096
+        ],
+        "responses": [
+          4096,
+          4096
+        ],
+        "writebacks": [
+          0,
+          0
+        ],
+        "write_acks": [
+          0,
+          0
+        ],
+        "l1_writebacks": [
+          0,
+          0
+        ],
+        "l2_writebacks": [
+          0,
+          0
+        ],
+        "blocked_responses": [
+          0,
+          0
+        ],
+        "pending": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "case": "sm120_stock",
+      "passed": true,
+      "cycles": [
+        "15156",
+        "26610"
+      ],
+      "kernel_cycles": [
+        "15156",
+        "11454"
+      ],
+      "dram_channel_snapshots": 2,
+      "dram_requests": [
+        4096,
+        4096
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 0,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          4096,
+          4096
+        ],
+        "responses": [
+          4096,
+          4096
+        ],
+        "writebacks": [
+          0,
+          0
+        ],
+        "write_acks": [
+          0,
+          0
+        ],
+        "l1_writebacks": [
+          0,
+          0
+        ],
+        "l2_writebacks": [
+          0,
+          0
+        ],
+        "blocked_responses": [
+          0,
+          0
+        ],
+        "pending": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "case": "sm90_pressure",
+      "passed": true,
+      "cycles": [
+        "21595",
+        "49907"
+      ],
+      "kernel_cycles": [
+        "21595",
+        "28312"
+      ],
+      "dram_channel_snapshots": 2,
+      "dram_requests": [
+        4903,
+        15085
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 0,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          4903,
+          15086
+        ],
+        "responses": [
+          4096,
+          13110
+        ],
+        "writebacks": [
+          807,
+          1975
+        ],
+        "write_acks": [
+          0,
+          0
+        ],
+        "l1_writebacks": [
+          0,
+          0
+        ],
+        "l2_writebacks": [
+          807,
+          1975
+        ],
+        "blocked_responses": [
+          0,
+          0
+        ],
+        "pending": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "case": "sm90_write_queue",
+      "passed": true,
+      "cycles": [
+        "21543",
+        "51832"
+      ],
+      "kernel_cycles": [
+        "21543",
+        "30289"
+      ],
+      "dram_channel_snapshots": 2,
+      "dram_requests": [
+        4902,
+        14925
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 0,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          4902,
+          14927
+        ],
+        "responses": [
+          4096,
+          12975
+        ],
+        "writebacks": [
+          786,
+          1928
+        ],
+        "write_acks": [
+          0,
+          0
+        ],
+        "l1_writebacks": [
+          0,
+          0
+        ],
+        "l2_writebacks": [
+          786,
+          1928
+        ],
+        "blocked_responses": [
+          0,
+          0
+        ],
+        "pending": [
+          20,
+          24
+        ]
+      }
+    },
+    {
+      "case": "sm90_simple",
+      "passed": true,
+      "cycles": [
+        "15044",
+        "26639"
+      ],
+      "kernel_cycles": [
+        "15044",
+        "11595"
+      ],
+      "dram_channel_snapshots": 2,
+      "dram_requests": [
+        0,
+        0
+      ],
+      "identical_repeated_snapshots": {
+        "baseline": 0,
+        "modified": 0
+      },
+      "differences": {},
+      "pool": {
+        "accepted": [
+          4096,
+          4096
+        ],
+        "responses": [
+          4096,
+          4096
+        ],
+        "writebacks": [
+          0,
+          0
+        ],
+        "write_acks": [
+          0,
+          0
+        ],
+        "l1_writebacks": [
+          0,
+          0
+        ],
+        "l2_writebacks": [
+          0,
+          0
+        ],
+        "blocked_responses": [
+          0,
+          0
+        ],
+        "pending": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "case": "two_clients_one_channel",
+      "passed": true,
+      "details": [
+        "POOL_COMPONENT_PASSED simple=0 separate=0 scheduler=1 ticks=812 blocked=771",
+        "POOL_COMPONENT_PASSED simple=0 separate=1 scheduler=1 ticks=815 blocked=771",
+        "POOL_COMPONENT_PASSED simple=0 separate=0 scheduler=0 ticks=812 blocked=771",
+        "POOL_COMPONENT_PASSED simple=1 separate=0 scheduler=1 ticks=806 blocked=796"
+      ]
+    }
+  ],
+  "passed": true,
+  "modified_source_sha256": {
+    "src/gpgpu-sim/addrdec.cc": "f43f53ac0105d77bcea738c93e33485b2dd19fa525b0fa7c8584331e150b5949",
+    "src/gpgpu-sim/addrdec.h": "8dbbc4394c6010b9980f80a51bbc630d25040134cf0cb1be4846fcecca2839ec",
+    "src/gpgpu-sim/delayqueue.h": "65d861ea71d84f35f52f4a7b5d3248960869e86ee9a74cb891e277930f9a9cac",
+    "src/gpgpu-sim/dram.cc": "a95164538429c70cebe4509572c54fa70d57947c5ce0f4951450a6591062ebb4",
+    "src/gpgpu-sim/dram.h": "34556da3f859b63e0c9b47c45ca104283ec01425a8c282c65df538ad6e7ce606",
+    "src/gpgpu-sim/dram_sched.cc": "66b9dcb64e0714787795ec11a13d1a4943efc0263a8f623c4adcd09a18e954db",
+    "src/gpgpu-sim/dram_sched.h": "defce5c995c03272883cd7c0f9eb764f4b7745ee4e6e774ae3d3373111764643",
+    "src/gpgpu-sim/gpu-cache.cc": "1046fd0448ae00691840d1acf1773ff41eae8c1b46f58ca075b6fd0cf58cdce5",
+    "src/gpgpu-sim/gpu-cache.h": "ed5369e5041acf7536a8b6ffedc2ffdf6d19fc5bfcc4478fe4c6c2fbafcc25e0",
+    "src/gpgpu-sim/gpu-misc.cc": "3f564552ff05bba4846e6371ac84d353600bcd554cfb95bcf1dcc4af94870e6f",
+    "src/gpgpu-sim/gpu-misc.h": "7ff304fe883c4b43c580a957c4004e7ee2b27a8275ad6fc12e667a5944c8be24",
+    "src/gpgpu-sim/gpu-sim-profiler.h": "012228c837c1c43a97be5873b328ef74116b2a96ab90da35e084855871a5655e",
+    "src/gpgpu-sim/gpu-sim.cc": "791906140b39d7dd779a16e127cce72f42e94af1579a7d105a87b95af8c1f04c",
+    "src/gpgpu-sim/gpu-sim.h": "ef1fef289d76b4a8cca92530ac7fcfc84d860b4db1556c9f88bedbdb08bc29a2",
+    "src/gpgpu-sim/hashing.cc": "b72e63112d46578ad11de0e5e0a66bade89b197750f3b1f6a0c2cfa48049c9a4",
+    "src/gpgpu-sim/hashing.h": "0af75a3a7ad9635dbc8f07edf7dc7559386017fea6a61dd0c3817ee5ace65ca5",
+    "src/gpgpu-sim/histogram.cc": "b1d95abf9cd72fb02a1da6b4ce3473ceea4325e6d56ee203231e5d3553c2bb86",
+    "src/gpgpu-sim/histogram.h": "3ee7888868f6044163db4d7f20a30af68f4c443f35cc8ba66d881f3b4daee49b",
+    "src/gpgpu-sim/icnt_wrapper.cc": "85967e6e01da392a18c5e28b166e4115cd45ffc6a34e3c1d8d6c7b721eece521",
+    "src/gpgpu-sim/icnt_wrapper.h": "362b97bbb24baf6bcce62c98c34a85e3b3ca3530a5a320d1b16985e0d1b733d6",
+    "src/gpgpu-sim/l2cache.cc": "06500ae7947de618a14ee209e1cda1aa02acc81de04d6d16dc423c504e433bb0",
+    "src/gpgpu-sim/l2cache.h": "c6c2ce368be7ab3dc9b2dd0e6f57ec4d4c053f5b78ff5b7330755e2feb7b2de0",
+    "src/gpgpu-sim/l2cache_trace.h": "eba6ae5e5e17a3056126bf9253af29ca8a2b21b2101f810bee4c62971264984e",
+    "src/gpgpu-sim/local_interconnect.cc": "ed1e1929dca6a8688ef8d47d8ddcfc75c0459af5b20af73964c382eb03a306e6",
+    "src/gpgpu-sim/local_interconnect.h": "fa296821fc1c0d304bd1800af880d37e38fad756cecebfe60b172e51b74ba5cf",
+    "src/gpgpu-sim/mem_fetch.cc": "d8ba331da006fd11095dc0a6fc88921bf042795a6ad7ef02f4acb5e9180f06be",
+    "src/gpgpu-sim/mem_fetch.h": "78c8574dfab2240376579eb6b74d05d4a6d79d999b007ca252309e9e684e378c",
+    "src/gpgpu-sim/mem_latency_stat.cc": "ee3fa7e72e83ba71517f55b9b7e24b33d9a30990404524795216e27252c5d03d",
+    "src/gpgpu-sim/mem_latency_stat.h": "6b4eab3f157758d0eeec75f41ca57f40dc474d545957969cb3c93ed9c2b31cbe",
+    "src/gpgpu-sim/memory_pool.cc": "2eac14d9df1d9a6af147aa8535d93cf5fc1c67ef1b90ebb34662c14ce69838f2",
+    "src/gpgpu-sim/memory_pool.h": "69523004c5325ea1ba7a24e4c527580c9a04671318acab713e5b0383957e0fde",
+    "src/gpgpu-sim/memory_pool_interface.h": "a5e6577823f675464edf4fc2cd81601e9172e5206e6251b046575c623fbc7b27",
+    "src/gpgpu-sim/mshr-table.cc": "28a65829c65bf414eae3e470cd8ca04a679e08afab5d2be6dd4dfd2768c45e10",
+    "src/gpgpu-sim/power_interface.cc": "b694f1acc13a9004365e2d86ae74c9aba9ec92c2d0f2adaf8243a83850ad7ab6",
+    "src/gpgpu-sim/power_interface.h": "b798636e0fed93eba51b856fd1f07b64618dcc044fbc4b29f5be3d3224e3372b",
+    "src/gpgpu-sim/power_stat.cc": "dea292384fa1ab7b214befb6584db871a111be9c1f23c5d6a9ccaf1e18c27275",
+    "src/gpgpu-sim/power_stat.h": "8e8f026b3ac2193dca8800ebf7d70cfb72d971e3335226a6ebf1de02b6ac0814",
+    "src/gpgpu-sim/scoreboard.cc": "f0df9cd310d3f21e0416d7baa020a1db8c71c9d79c2d96996866ec52e8b87482",
+    "src/gpgpu-sim/scoreboard.h": "5d8408479d51330f820eff229e50f221f17ff15ec068a04374191e87e085b9cb",
+    "src/gpgpu-sim/shader.cc": "f511ff08e96e855358acabcfec5665553bb5384648125890433ab159c16c204a",
+    "src/gpgpu-sim/shader.h": "4fa26e61c67fef7edafa6d9d48cb46c26f2d2dc4e591aba8e6e3feec4d94e065",
+    "src/gpgpu-sim/shader_trace.h": "53f9fa4865b013462780da5cafe298f917f4421ecd75e59c0b90e6141c8e443c",
+    "src/gpgpu-sim/stack.cc": "3d86eda57201815cce8b81cf4ef3374c717650cdd6b97b7a1806d5fd0f1b7b6d",
+    "src/gpgpu-sim/stack.h": "35d3bc6ccc970269acb0ff2a9f3b04996857695c6e5c548267a5de0e6bc132e9",
+    "src/gpgpu-sim/stat-tool.cc": "8d07a2c1de1a9e8499343b58f657594773b8fe9d1f1167b5d69cae98f141b080",
+    "src/gpgpu-sim/stat-tool.h": "4f1fb73b6b512139ac89a2359161ba9f01afc06f5791405af9f0491488909657",
+    "src/gpgpu-sim/stats.h": "d403a639a5613ee5299bb4c1326e1e653b3b96f5c4f1cd4ddca8c6691b0278a2",
+    "src/gpgpu-sim/traffic_breakdown.cc": "ad573db14f125f6581f0637b0c49a3d519a8b33405b3c093e4f697969643b18e",
+    "src/gpgpu-sim/traffic_breakdown.h": "a701bea2ccf9d1a22a45d044a923e49250c804538b9f76a5d8075e457250d50e",
+    "src/gpgpu-sim/visualizer.cc": "3c5b82d32fe9b63db2405633586dbab2464114179e744c4b3f601e94bdac09d9",
+    "src/gpgpu-sim/visualizer.h": "38f8d5a0a2319dc78711f304a3a96b71038a79cbe1dad7362ff8ff33063dd4c5"
+  }
+}
